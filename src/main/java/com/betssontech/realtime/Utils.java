@@ -34,7 +34,11 @@ public class Utils {
 
         @Override
         public boolean isKeep(TridentTuple tuple) {
-            System.out.println(tuple);
+            int i = 0;
+            System.out.println("---");
+            for (String s : tuple.getFields()) {
+                System.out.println(s + " : " + tuple.get(i++).toString());
+            }
             return true;
         }
     }

@@ -8,23 +8,16 @@ import backtype.storm.utils.Utils;
 import org.joda.time.DateTime;
 import storm.trident.Stream;
 import storm.trident.TridentTopology;
-import storm.trident.operation.BaseFilter;
-import storm.trident.operation.BaseFunction;
-import storm.trident.operation.CombinerAggregator;
-import storm.trident.operation.TridentCollector;
 import storm.trident.operation.builtin.Count;
 import storm.trident.operation.builtin.Sum;
 import storm.trident.testing.FixedBatchSpout;
-import storm.trident.tuple.TridentTuple;
 
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
+import java.io.Serializable;
 
 /**
  * Created by jelu on 2015-01-30.
  */
-public class TridentTest {
+public class TridentTest implements Serializable{
 
     public static final String JOE = "joe";
     public static final String JANE = "jane";
@@ -36,24 +29,45 @@ public class TridentTest {
     public static final String REGISTER = "register";
     public static final String LIVE = "live";
     public static final String TABLE = "table";
+    public static final String OTHER = "other";
+    public static final String FIRST_DEPOSIT_TIME = "first_deposit_time";
+    public static final String TIMESTAMP = "timestamp";
+    public static final String USER = "user";
+    public static final String LAST_TRANS_TIME = "last_time_stamp";
+    public static final String NUMBER_OF_BETS = "number_of_bets";
+    public static final String AVGBET = "average_bet";
+    public static final String FIRSTGAMEPLAYED = "first_game_played";
+    public static final String SUM_DEPOSITS = "sum_deposits";
+    public static final String SUM_TRANS = "sum_trans";
+    public static final String GAME = "game";
+    public static final String AMOUNT = "amount";
+    public static final String EVENT_TYPE = "event_type";
+    private DateTime T0 = DateTime.now();
 
     public static void main(String[] args) {
 
-        final String T0 = "2015-01-02T14:00:00";
-        final String T1 = "2015-01-02T14:05:00";
-        final String T2 = "2015-01-02T14:10:00";
-        final String T3 = "2015-01-02T14:15:00";
-        final String T4 = "2015-01-02T14:20:00";
+        // Set up and run a local cluster for testing
+        Config conf = new Config();
+        conf.setDebug(false);
 
+        TridentTest tt = new TridentTest();
 
-        FixedBatchSpout registrations = new FixedBatchSpout(new Fields("op", "user", "timestamp"), 3,
+        LocalCluster cluster = new LocalCluster();
+        cluster.submitTopology("test", conf, tt.getTopology().build());
+        Utils.sleep(5000);
+        cluster.killTopology("test");
+        cluster.shutdown();
+    }
+
+    public TridentTopology getTopology(){
+        FixedBatchSpout registrations = new FixedBatchSpout(new Fields(EVENT_TYPE, USER, TIMESTAMP), 3,
                 new Values(REGISTER, JOE, nextTime()),
                 new Values(REGISTER, JANE, nextTime()),
                 new Values(REGISTER, JIM, nextTime()),
                 new Values(REGISTER, JEN, nextTime())
         );
 
-        FixedBatchSpout deposits = new FixedBatchSpout(new Fields("op", "user", "timestamp", "amount"), 30,
+        FixedBatchSpout deposits = new FixedBatchSpout(new Fields(EVENT_TYPE, USER, TIMESTAMP, AMOUNT), 30,
                 new Values(DEPOSIT, JOE, nextTime(), 100),
                 new Values(DEPOSIT, JANE, nextTime(), 10),
                 new Values(DEPOSIT, JEN, nextTime(), 50),
@@ -61,7 +75,7 @@ public class TridentTest {
                 new Values(DEPOSIT, JEN, nextTime(), 30)
         );
 
-        FixedBatchSpout transactionsSpout = new FixedBatchSpout(new Fields("op", "user", "game", "timestamp", "amount"), 30,
+        FixedBatchSpout transactionsSpout = new FixedBatchSpout(new Fields(EVENT_TYPE, USER, GAME, TIMESTAMP, AMOUNT), 30,
                 new Values(BET, JOE, LIVE, nextTime(), 1),
                 new Values(BET, JOE, TABLE, nextTime(), 2),
                 new Values(WIN, JOE, TABLE, nextTime(), 2),
@@ -77,106 +91,64 @@ public class TridentTest {
                 new Values(BET, JANE, LIVE, nextTime(), 2),
                 new Values(BET, JANE, LIVE, nextTime(), 2),
                 new Values(BET, JANE, LIVE, nextTime(), 2),
-                new Values(BET, JEN, LIVE, nextTime(), 2),
+                new Values(BET, JEN, OTHER, nextTime(), 2),
+                new Values(BET, JEN, OTHER, nextTime(), 20),
                 new Values(BET, JOE, LIVE, nextTime(), 2)
         );
 
         TridentTopology topology = new TridentTopology();
 
 
-        Stream depositStream = topology.newStream("deposits", deposits)
-                .partitionBy(new Fields("user"))
-                .groupBy(new Fields("user"))
-                .aggregate(new Fields("amount"), new Sum(), new Fields("sum_deposits"));
+        Stream rawDeposits = topology.newStream("deposits", deposits)
+                .partitionBy(new Fields(USER));
+
+        Stream sumDeposits = rawDeposits
+                .groupBy(new Fields(USER))
+                .aggregate(new Fields(AMOUNT), new Sum(), new Fields(SUM_DEPOSITS));
+
+        Stream firstDeposit = rawDeposits
+                .groupBy(new Fields(USER))
+                .aggregate(new Fields(TIMESTAMP), new FirstInstanceAggregator(TIMESTAMP), new Fields(FIRST_DEPOSIT_TIME));
+
+        // sum of deposits and timestamp for first deposit
+        Stream depositStream = topology.join(firstDeposit, new Fields(USER), sumDeposits, new Fields(USER), new Fields(USER, FIRST_DEPOSIT_TIME, SUM_DEPOSITS));
 
         // All transactions, filter only bet (not win)
         Stream transactionStream = topology.newStream("transactions", transactionsSpout)
-                .partitionBy(new Fields("user"))
-                .each(new Fields("op", "user", "amount"), new BetFilter());
+                .partitionBy(new Fields(USER))
+                .each(new Fields(EVENT_TYPE, USER, AMOUNT), new BetFilter());
 
         // Calculate avg bet
         Stream transAggStream = transactionStream
-                .groupBy(new Fields("user"))
+                .groupBy(new Fields(USER))
                 .chainedAgg()
-                .partitionAggregate(new Fields("user"), new Count(), new Fields("count"))
-                .partitionAggregate(new Fields("amount"), new Sum(), new Fields("sum"))
+                .partitionAggregate(new Fields(AMOUNT), new Sum(), new Fields(SUM_TRANS))
+                .partitionAggregate(new Fields(USER), new Count(), new Fields(NUMBER_OF_BETS))
+                .partitionAggregate(new Fields(TIMESTAMP), new LastInstanceAggregator(TIMESTAMP), new Fields(LAST_TRANS_TIME))
                 .chainEnd()
-                .each(new Fields("sum", "count"), new Divide(), new Fields("avgbet"));
+                .each(new Fields(SUM_TRANS, NUMBER_OF_BETS), new Divide(), new Fields(AVGBET));
 
         // Get first game type
         Stream firstGameStream = transactionStream
-                .groupBy(new Fields("user"))
-                .aggregate(new Fields("game"), new FirstGameAgg(), new Fields("firstgame"));
+                .groupBy(new Fields(USER))
+                .aggregate(new Fields(GAME), new FirstInstanceAggregator(GAME), new Fields(FIRSTGAMEPLAYED));
 
         // Join avg and first game
-        final Stream stream = topology.join(transAggStream, new Fields("user"), firstGameStream, new Fields("user"), new Fields("user", "count", "sum", "avgbet", "firstgame"));
-
-        // Output all users, game and avg bet
-        stream.each(new Fields("user", "firstgame", "avgbet"), new com.betssontech.realtime.Utils.PrintFilter());
-
+        final Stream stream = topology
+                .join(transAggStream, new Fields(USER), firstGameStream, new Fields(USER), new Fields(USER, SUM_TRANS, NUMBER_OF_BETS, LAST_TRANS_TIME, AVGBET, FIRSTGAMEPLAYED));
 
         // Add deposits
-        final Stream transAndDeposits = topology.join(stream, new Fields("user"), depositStream, new Fields("user"), new Fields("user", "count", "sum", "avgbet", "firstgame", "sum_deposits"));
+        final Stream transAndDeposits = topology.join(stream, new Fields(USER), depositStream, new Fields(USER), new Fields(USER, SUM_TRANS, NUMBER_OF_BETS, LAST_TRANS_TIME, AVGBET, FIRSTGAMEPLAYED, FIRST_DEPOSIT_TIME, SUM_DEPOSITS));
 
-        transAndDeposits.each(new Fields("user", "firstgame", "avgbet", "sum_deposits"), new com.betssontech.realtime.Utils.PrintFilter());
-
-
-
-        // Set up and run a local cluster for testing
-
-        Config conf = new Config();
-        conf.setDebug(false);
-
-        LocalCluster cluster = new LocalCluster();
-        cluster.submitTopology("test", conf, topology.build());
-        Utils.sleep(5000);
-        cluster.killTopology("test");
-        cluster.shutdown();
+        // output all fields
+        transAndDeposits.each(new Fields(USER, FIRSTGAMEPLAYED, AVGBET, NUMBER_OF_BETS, LAST_TRANS_TIME, FIRST_DEPOSIT_TIME, SUM_DEPOSITS), new com.betssontech.realtime.Utils.PrintFilter());
+        return topology;
     }
 
-    static DateTime T0 = DateTime.now();
-
-    private static String nextTime() {
+    private String nextTime() {
         T0 = T0.plusSeconds((int) (Math.random() * 20));
         return T0.toDateTimeISO().toString();
     }
 
 
-    private static class BetFilter extends BaseFilter {
-        @Override
-        public boolean isKeep(TridentTuple tuple) {
-            return tuple.getString(0).equals(BET);
-        }
-    }
-
-    private static class Divide extends BaseFunction {
-
-        @Override
-        public void execute(TridentTuple tuple, TridentCollector collector) {
-            Long a = tuple.getLong(0);
-            Long b = tuple.getLong(1);
-            Double d = a.doubleValue() / b.doubleValue();
-            collector.emit(new Values(d));
-        }
-    }
-
-    private static class FirstGameAgg implements CombinerAggregator<String> {
-        private String value;
-
-        @Override
-        public String init(TridentTuple tuple) {
-            value = tuple.getStringByField("game");
-            return value;
-        }
-
-        @Override
-        public String combine(String val1, String val2) {
-            return value;
-        }
-
-        @Override
-        public String zero() {
-            return null;
-        }
-    }
 }
