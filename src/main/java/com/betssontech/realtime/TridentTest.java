@@ -5,39 +5,141 @@ import backtype.storm.LocalCluster;
 import backtype.storm.tuple.Fields;
 import backtype.storm.tuple.Values;
 import backtype.storm.utils.Utils;
-import storm.trident.TridentState;
+import storm.trident.Stream;
 import storm.trident.TridentTopology;
+import storm.trident.operation.BaseFilter;
+import storm.trident.operation.BaseFunction;
+import storm.trident.operation.CombinerAggregator;
+import storm.trident.operation.TridentCollector;
 import storm.trident.operation.builtin.Count;
+import storm.trident.operation.builtin.Sum;
 import storm.trident.testing.FixedBatchSpout;
-import storm.trident.testing.MemoryMapState;
-import storm.trident.testing.Split;
+import storm.trident.tuple.TridentTuple;
 
 /**
  * Created by jelu on 2015-01-30.
  */
 public class TridentTest {
-    public static void main(String[] args){
-        FixedBatchSpout spout = new FixedBatchSpout(new Fields("sentence"), 3,
-                new Values("the cow jumped over the moon"),
-                new Values("the man went to the store and bought some candy"),
-                new Values("four score and seven years ago"),
-                new Values("how many apples can you eat"));
-        spout.setCycle(true);
+
+    public static final String JOE = "joe";
+    public static final String JANE = "jane";
+    public static final String JEN = "jen";
+    public static final String JIM = "jim";
+    public static final String BET = "bet";
+    public static final String WIN = "win";
+    public static final String DEPOSIT = "deposit";
+    public static final String REGISTER = "register";
+    public static final String LIVE = "live";
+    public static final String TABLE = "table";
+
+    public static void main(String[] args) {
+
+        final String T0 = "2015-01-02T14:00:00";
+        final String T1 = "2015-01-02T14:05:00";
+        final String T2 = "2015-01-02T14:10:00";
+        final String T3 = "2015-01-02T14:15:00";
+        final String T4 = "2015-01-02T14:20:00";
+
+        FixedBatchSpout registrations = new FixedBatchSpout(new Fields("op", "user", "timestamp"), 3,
+                new Values(REGISTER, JOE, T0),
+                new Values(REGISTER, JANE, T0),
+                new Values(REGISTER, JIM, T0),
+                new Values(REGISTER, JEN, T0)
+        );
+
+        FixedBatchSpout deposits = new FixedBatchSpout(new Fields("op", "user", "timestamp", "amount"), 3,
+                new Values(DEPOSIT, JOE, T1, "100"),
+                new Values(DEPOSIT, JANE, T1, "10"),
+                new Values(DEPOSIT, JEN, T2, "50"),
+                new Values(DEPOSIT, JEN, T3, "100"),
+                new Values(DEPOSIT, JEN, T4, "30")
+        );
+
+        FixedBatchSpout transactions = new FixedBatchSpout(new Fields("op", "user", "game", "timestamp", "amount"), 30,
+                new Values(BET, JOE, LIVE, T1, 1),
+                new Values(BET, JOE, TABLE, T1, 2),
+                new Values(WIN, JOE, TABLE, T1, 2),
+                new Values(BET, JOE, TABLE, T1, 1),
+                new Values(BET, JOE, TABLE, T1, 1),
+                new Values(BET, JOE, TABLE, T1, 1),
+                new Values(BET, JOE, TABLE, T1, 2),
+                new Values(BET, JOE, LIVE, T1, 2),
+                new Values(WIN, JOE, LIVE, T1, 5),
+                new Values(BET, JOE, LIVE, T1, 2),
+                new Values(BET, JOE, LIVE, T1, 2)
+        );
 
         TridentTopology topology = new TridentTopology();
-        TridentState wordCounts =
-                topology.newStream("spout1", spout)
-                        .each(new Fields("sentence"), new Split(), new Fields("word"))
-                        .persistentAggregate(new MemoryMapState.Factory(), new Count(), new Fields("count"))
-                        .parallelismHint(6);
+
+        // All transactions, filter only bet (not win)
+        Stream transactionStream = topology.newStream("transactions", transactions)
+                .each(new Fields("op", "user", "amount"), new BetFilter());
+
+        // Calculate avg bet
+        Stream transAggStream = transactionStream
+                .groupBy(new Fields("user"))
+                .chainedAgg()
+                .partitionAggregate(new Fields("user"), new Count(), new Fields("count"))
+                .partitionAggregate(new Fields("amount"), new Sum(), new Fields("sum"))
+                .chainEnd()
+                .each(new Fields("sum", "count"), new Divide(), new Fields("avgbet"));
+
+        // Get first game type
+        Stream firstGameStream = transactionStream
+                .groupBy(new Fields("user"))
+                .aggregate(new Fields("game"), new FirstGameAgg(), new Fields("firstgame"));
+
+        // Join avg and first game
+        final Stream stream = topology.join(transAggStream, new Fields("user"), firstGameStream, new Fields("user"), new Fields("user", "count", "sum", "avgbet", "firstgame"));
+
+        // Output all users, game and avg bet
+        stream.each(new Fields("user", "firstgame", "avgbet"), new com.betssontech.realtime.Utils.PrintFilter());
 
         Config conf = new Config();
-        conf.setDebug(true);
+        conf.setDebug(false);
 
         LocalCluster cluster = new LocalCluster();
         cluster.submitTopology("test", conf, topology.build());
         Utils.sleep(5000);
         cluster.killTopology("test");
         cluster.shutdown();
+    }
+
+    private static class BetFilter extends BaseFilter {
+        @Override
+        public boolean isKeep(TridentTuple tuple) {
+            return tuple.getString(0).equals(BET);
+        }
+    }
+
+    private static class Divide extends BaseFunction {
+
+        @Override
+        public void execute(TridentTuple tuple, TridentCollector collector) {
+            Long a = tuple.getLong(0);
+            Long b = tuple.getLong(1);
+            Double d = a.doubleValue() / b.doubleValue();
+            collector.emit(new Values(d));
+        }
+    }
+
+    private static class FirstGameAgg implements CombinerAggregator<String> {
+        private String value;
+
+        @Override
+        public String init(TridentTuple tuple) {
+            value = tuple.getStringByField("game");
+            return value;
+        }
+
+        @Override
+        public String combine(String val1, String val2) {
+            return value;
+        }
+
+        @Override
+        public String zero() {
+            return null;
+        }
     }
 }
