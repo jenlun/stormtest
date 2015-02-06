@@ -14,9 +14,6 @@ import storm.trident.testing.FixedBatchSpout;
 
 import java.io.Serializable;
 
-/**
- * Created by jelu on 2015-01-30.
- */
 public class TridentTest implements Serializable{
 
     public static final String JOE = "joe";
@@ -33,10 +30,10 @@ public class TridentTest implements Serializable{
     public static final String FIRST_DEPOSIT_TIME = "first_deposit_time";
     public static final String TIMESTAMP = "timestamp";
     public static final String USER = "user";
-    public static final String LAST_TRANS_TIME = "last_time_stamp";
+    public static final String LAST_TRANS_TIME = "last_transaction_time";
     public static final String NUMBER_OF_BETS = "number_of_bets";
-    public static final String AVGBET = "average_bet";
-    public static final String FIRSTGAMEPLAYED = "first_game_played";
+    public static final String AVERAGE_BET = "average_bet";
+    public static final String FIRST_TYPE_OF_GAME_PLAYED = "first_type_of_game_played";
     public static final String SUM_DEPOSITS = "sum_deposits";
     public static final String SUM_TRANS = "sum_trans";
     public static final String GAME = "game";
@@ -126,22 +123,22 @@ public class TridentTest implements Serializable{
                 .partitionAggregate(new Fields(USER), new Count(), new Fields(NUMBER_OF_BETS))
                 .partitionAggregate(new Fields(TIMESTAMP), new LastInstanceAggregator(TIMESTAMP), new Fields(LAST_TRANS_TIME))
                 .chainEnd()
-                .each(new Fields(SUM_TRANS, NUMBER_OF_BETS), new Divide(), new Fields(AVGBET));
+                .each(new Fields(SUM_TRANS, NUMBER_OF_BETS), new Divide(), new Fields(AVERAGE_BET));
 
         // Get first game type
         Stream firstGameStream = transactionStream
                 .groupBy(new Fields(USER))
-                .aggregate(new Fields(GAME), new FirstInstanceAggregator(GAME), new Fields(FIRSTGAMEPLAYED));
+                .aggregate(new Fields(GAME), new FirstInstanceAggregator(GAME), new Fields(FIRST_TYPE_OF_GAME_PLAYED));
 
         // Join avg and first game
         final Stream stream = topology
-                .join(transAggStream, new Fields(USER), firstGameStream, new Fields(USER), new Fields(USER, SUM_TRANS, NUMBER_OF_BETS, LAST_TRANS_TIME, AVGBET, FIRSTGAMEPLAYED));
+                .join(transAggStream, new Fields(USER), firstGameStream, new Fields(USER), new Fields(USER, SUM_TRANS, NUMBER_OF_BETS, LAST_TRANS_TIME, AVERAGE_BET, FIRST_TYPE_OF_GAME_PLAYED));
 
         // Add deposits
-        final Stream transAndDeposits = topology.join(stream, new Fields(USER), depositStream, new Fields(USER), new Fields(USER, SUM_TRANS, NUMBER_OF_BETS, LAST_TRANS_TIME, AVGBET, FIRSTGAMEPLAYED, FIRST_DEPOSIT_TIME, SUM_DEPOSITS));
+        final Stream transAndDeposits = topology.join(stream, new Fields(USER), depositStream, new Fields(USER), new Fields(USER, SUM_TRANS, NUMBER_OF_BETS, LAST_TRANS_TIME, AVERAGE_BET, FIRST_TYPE_OF_GAME_PLAYED, FIRST_DEPOSIT_TIME, SUM_DEPOSITS));
 
         // output all fields
-        transAndDeposits.each(new Fields(USER, FIRSTGAMEPLAYED, AVGBET, NUMBER_OF_BETS, LAST_TRANS_TIME, FIRST_DEPOSIT_TIME, SUM_DEPOSITS), new com.betssontech.realtime.Utils.PrintFilter());
+        transAndDeposits.each(new Fields(USER, FIRST_TYPE_OF_GAME_PLAYED, AVERAGE_BET, NUMBER_OF_BETS, LAST_TRANS_TIME, FIRST_DEPOSIT_TIME, SUM_DEPOSITS), new com.betssontech.realtime.Utils.PrintFilter());
         return topology;
     }
 
