@@ -5,6 +5,7 @@ import backtype.storm.LocalCluster;
 import backtype.storm.tuple.Fields;
 import backtype.storm.tuple.Values;
 import backtype.storm.utils.Utils;
+import org.joda.time.DateTime;
 import storm.trident.Stream;
 import storm.trident.TridentTopology;
 import storm.trident.operation.BaseFilter;
@@ -15,6 +16,10 @@ import storm.trident.operation.builtin.Count;
 import storm.trident.operation.builtin.Sum;
 import storm.trident.testing.FixedBatchSpout;
 import storm.trident.tuple.TridentTuple;
+
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
 
 /**
  * Created by jelu on 2015-01-30.
@@ -40,39 +45,53 @@ public class TridentTest {
         final String T3 = "2015-01-02T14:15:00";
         final String T4 = "2015-01-02T14:20:00";
 
+
         FixedBatchSpout registrations = new FixedBatchSpout(new Fields("op", "user", "timestamp"), 3,
-                new Values(REGISTER, JOE, T0),
-                new Values(REGISTER, JANE, T0),
-                new Values(REGISTER, JIM, T0),
-                new Values(REGISTER, JEN, T0)
+                new Values(REGISTER, JOE, nextTime()),
+                new Values(REGISTER, JANE, nextTime()),
+                new Values(REGISTER, JIM, nextTime()),
+                new Values(REGISTER, JEN, nextTime())
         );
 
-        FixedBatchSpout deposits = new FixedBatchSpout(new Fields("op", "user", "timestamp", "amount"), 3,
-                new Values(DEPOSIT, JOE, T1, "100"),
-                new Values(DEPOSIT, JANE, T1, "10"),
-                new Values(DEPOSIT, JEN, T2, "50"),
-                new Values(DEPOSIT, JEN, T3, "100"),
-                new Values(DEPOSIT, JEN, T4, "30")
+        FixedBatchSpout deposits = new FixedBatchSpout(new Fields("op", "user", "timestamp", "amount"), 30,
+                new Values(DEPOSIT, JOE, nextTime(), 100),
+                new Values(DEPOSIT, JANE, nextTime(), 10),
+                new Values(DEPOSIT, JEN, nextTime(), 50),
+                new Values(DEPOSIT, JEN, nextTime(), 100),
+                new Values(DEPOSIT, JEN, nextTime(), 30)
         );
 
-        FixedBatchSpout transactions = new FixedBatchSpout(new Fields("op", "user", "game", "timestamp", "amount"), 30,
-                new Values(BET, JOE, LIVE, T1, 1),
-                new Values(BET, JOE, TABLE, T1, 2),
-                new Values(WIN, JOE, TABLE, T1, 2),
-                new Values(BET, JOE, TABLE, T1, 1),
-                new Values(BET, JOE, TABLE, T1, 1),
-                new Values(BET, JOE, TABLE, T1, 1),
-                new Values(BET, JOE, TABLE, T1, 2),
-                new Values(BET, JOE, LIVE, T1, 2),
-                new Values(WIN, JOE, LIVE, T1, 5),
-                new Values(BET, JOE, LIVE, T1, 2),
-                new Values(BET, JOE, LIVE, T1, 2)
+        FixedBatchSpout transactionsSpout = new FixedBatchSpout(new Fields("op", "user", "game", "timestamp", "amount"), 30,
+                new Values(BET, JOE, LIVE, nextTime(), 1),
+                new Values(BET, JOE, TABLE, nextTime(), 2),
+                new Values(WIN, JOE, TABLE, nextTime(), 2),
+                new Values(BET, JOE, TABLE, nextTime(), 1),
+                new Values(BET, JOE, TABLE, nextTime(), 1),
+                new Values(BET, JOE, TABLE, nextTime(), 1),
+                new Values(BET, JOE, TABLE, nextTime(), 2),
+                new Values(BET, JOE, LIVE, nextTime(), 2),
+                new Values(WIN, JOE, LIVE, nextTime(), 5),
+                new Values(BET, JOE, LIVE, nextTime(), 2),
+                new Values(BET, JOE, LIVE, nextTime(), 2),
+                new Values(BET, JANE, LIVE, nextTime(), 2),
+                new Values(BET, JANE, LIVE, nextTime(), 2),
+                new Values(BET, JANE, LIVE, nextTime(), 2),
+                new Values(BET, JANE, LIVE, nextTime(), 2),
+                new Values(BET, JEN, LIVE, nextTime(), 2),
+                new Values(BET, JOE, LIVE, nextTime(), 2)
         );
 
         TridentTopology topology = new TridentTopology();
 
+
+        Stream depositStream = topology.newStream("deposits", deposits)
+                .partitionBy(new Fields("user"))
+                .groupBy(new Fields("user"))
+                .aggregate(new Fields("amount"), new Sum(), new Fields("sum_deposits"));
+
         // All transactions, filter only bet (not win)
-        Stream transactionStream = topology.newStream("transactions", transactions)
+        Stream transactionStream = topology.newStream("transactions", transactionsSpout)
+                .partitionBy(new Fields("user"))
                 .each(new Fields("op", "user", "amount"), new BetFilter());
 
         // Calculate avg bet
@@ -95,6 +114,16 @@ public class TridentTest {
         // Output all users, game and avg bet
         stream.each(new Fields("user", "firstgame", "avgbet"), new com.betssontech.realtime.Utils.PrintFilter());
 
+
+        // Add deposits
+        final Stream transAndDeposits = topology.join(stream, new Fields("user"), depositStream, new Fields("user"), new Fields("user", "count", "sum", "avgbet", "firstgame", "sum_deposits"));
+
+        transAndDeposits.each(new Fields("user", "firstgame", "avgbet", "sum_deposits"), new com.betssontech.realtime.Utils.PrintFilter());
+
+
+
+        // Set up and run a local cluster for testing
+
         Config conf = new Config();
         conf.setDebug(false);
 
@@ -104,6 +133,14 @@ public class TridentTest {
         cluster.killTopology("test");
         cluster.shutdown();
     }
+
+    static DateTime T0 = DateTime.now();
+
+    private static String nextTime() {
+        T0 = T0.plusSeconds((int) (Math.random() * 20));
+        return T0.toDateTimeISO().toString();
+    }
+
 
     private static class BetFilter extends BaseFilter {
         @Override
